@@ -3,17 +3,123 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Solano Nights — an open-world crime game</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #10151c; font-family: 'Segoe UI', system-ui, sans-serif; color: #fff; }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .panel { background: rgba(10, 14, 20, 0.72); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px; backdrop-filter: blur(3px); }
+  /* Top-left: health + cash */
+  #topleft { position: fixed; top: 14px; left: 14px; padding: 10px 14px; min-width: 210px; z-index: 5; }
+  #health-bar { width: 190px; height: 12px; background: #0009; border-radius: 6px; overflow: hidden; margin: 4px 0 2px; }
+  #health-fill { height: 100%; width: 100%; background: #58c96b; transition: width 0.2s; }
+  #health-text { font-size: 12px; color: #cfe3d0; }
+  #cash { font-size: 22px; font-weight: 700; color: #7ee2a0; letter-spacing: 0.5px; }
+  /* Top-right: wanted stars + clock */
+  #topright { position: fixed; top: 14px; right: 14px; padding: 10px 14px; text-align: right; z-index: 5; }
+  #stars { font-size: 26px; letter-spacing: 3px; text-shadow: 0 0 8px #000; }
+  #clock { font-size: 14px; color: #dfe8f2; margin-top: 2px; }
+  #wanted-flash { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(255,40,40,0.35) 100%); }
+  /* Bottom-left: objective + dialogue */
+  #bottomleft { position: fixed; left: 14px; bottom: 14px; max-width: 460px; z-index: 5; }
+  #objective { padding: 10px 14px; font-size: 15px; font-weight: 600; }
+  #objective::before { content: '◆ '; color: #ffd23a; }
+  #dialogue { margin-top: 8px; padding: 10px 14px; font-size: 14px; font-style: italic; color: #ffe9a8; min-height: 18px; }
+  /* Bottom-right: minimap + speed */
+  #bottomright { position: fixed; right: 14px; bottom: 14px; text-align: right; z-index: 5; }
+  #minimap { width: 168px; height: 168px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.25); background: #10151c; }
+  #speed { font-size: 26px; font-weight: 700; margin-top: 4px; text-shadow: 0 0 6px #000; }
+  #weapon { font-size: 13px; color: #dfe8f2; }
+  #ammo { font-size: 15px; color: #ffd23a; font-weight: 600; }
+  /* Crosshair + hint + toast */
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; z-index: 5; pointer-events: none; }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: #fff; box-shadow: 0 0 3px #000; }
+  #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
+  #hint { position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%); font-size: 13px; color: #fff;
+    background: rgba(10,14,20,0.72); padding: 6px 12px; border-radius: 8px; z-index: 5; white-space: nowrap; }
+  #toast { position: fixed; left: 50%; top: 84px; transform: translateX(-50%); font-size: 18px; font-weight: 700;
+    color: #ffd23a; text-shadow: 0 2px 8px #000; z-index: 6; opacity: 0; transition: opacity 0.3s; text-align: center; }
+  /* Overlays */
+  .overlay { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(160deg, rgba(20,16,40,0.88), rgba(10,30,50,0.88)); }
+  .card { max-width: 620px; padding: 36px 44px; text-align: center; }
+  .card h1 { margin: 0 0 4px; font-size: 52px; letter-spacing: 2px; color: #ffd23a; text-shadow: 0 3px 18px rgba(255,210,58,0.35); }
+  .card h2 { margin: 0 0 16px; font-size: 15px; font-weight: 400; letter-spacing: 4px; color: #9fd8ef; text-transform: uppercase; }
+  .card p { font-size: 15px; line-height: 1.55; color: #e8eef4; }
+  .card .controls { font-size: 13px; color: #b9c6d2; line-height: 1.9; }
+  .card button { margin: 8px 6px 0; padding: 12px 26px; font-size: 16px; font-weight: 700; cursor: pointer;
+    color: #10151c; background: #ffd23a; border: none; border-radius: 8px; }
+  .card button.ghost { background: transparent; color: #ffd23a; border: 2px solid #ffd23a; }
+  #pause, #endcard { display: none; }
+  #end-title { color: #ff5a4a; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<canvas id="game" aria-label="Solano Nights: an open-world crime game in the city of Port Solano"></canvas>
 <p id="status" role="status" aria-live="polite"></p>
+<div id="wanted-flash"></div>
+
+<div id="topleft" class="panel">
+  <div id="cash">$250</div>
+  <div id="health-bar"><div id="health-fill"></div></div>
+  <div id="health-text">100</div>
+</div>
+<div id="topright" class="panel">
+  <div id="stars">☆☆☆☆☆</div>
+  <div id="clock">16:36 • JOB 1/5</div>
+</div>
+<div id="bottomleft">
+  <div id="objective" class="panel">Press T to start the first job.</div>
+  <div id="dialogue" class="panel"></div>
+</div>
+<div id="bottomright">
+  <canvas id="minimap" width="168" height="168"></canvas>
+  <div id="speed"></div>
+  <div id="weapon">FISTS</div>
+  <div id="ammo">—</div>
+</div>
+<div id="crosshair"></div>
+<div id="hint"></div>
+<div id="toast"></div>
+
+<div id="title" class="overlay">
+  <div class="card">
+    <h1>SOLANO NIGHTS</h1>
+    <h2>An open-world crime game &bull; Port Solano</h2>
+    <p>Mara Voss came to Port Solano with a fast car and a faster reputation. The fixer
+    Ivo Kade has five jobs for her — and the whole sun-soaked city is watching. Explore on
+    foot or behind the wheel, steal what you need, outrun the Solano PD, and finish the story.</p>
+    <p class="controls">WASD / arrows — move &amp; drive &nbsp;•&nbsp; SHIFT — sprint &nbsp;•&nbsp; E — steal / exit car<br>
+    Mouse drag — look &nbsp;•&nbsp; Click — shoot &nbsp;•&nbsp; F — punch &nbsp;•&nbsp; 1/2 — fists / pistol<br>
+    R — reload &nbsp;•&nbsp; T — next job &nbsp;•&nbsp; P — pause &amp; save &nbsp;•&nbsp; M — mute</p>
+    <button id="start-btn">START THE STORY</button>
+    <button id="continue-btn" class="ghost" style="display:none">CONTINUE</button>
+  </div>
+</div>
+
+<div id="pause" class="overlay">
+  <div class="card">
+    <h1 style="font-size:40px">PAUSED</h1>
+    <p>Port Solano waits for no one. Well — except right now.</p>
+    <button id="resume-btn">RESUME</button>
+    <button id="save-btn" class="ghost">SAVE GAME</button>
+    <button id="quit-btn" class="ghost">SAVE &amp; QUIT TO TITLE</button>
+  </div>
+</div>
+
+<div id="endcard" class="overlay">
+  <div class="card">
+    <h1 id="end-title">BUSTED</h1>
+    <p id="end-text"></p>
+    <button id="end-btn">BACK TO THE STREETS</button>
+  </div>
+</div>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

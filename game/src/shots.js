@@ -1,79 +1,111 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Solano Nights — staged screenshot scenes. Each one plays the real rules
+// forward from a fixed seed with a simple autopilot, so the frame is what a
+// short game really looks like and the same seed always gives the same frame.
+// ?shot=start|drive|chase|mission (any other name is start).
+import { PLACES } from './config.js';
+import { startMission } from './missions.js';
+import { shoot } from './combat.js';
+import { stealCar } from './vehicles.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+const STEP = 1 / 30;
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function fakeInput() {
+  return {
+    moveX: 0, moveY: 0, brake: false, sprint: false,
+    camYaw: 0.6, camPitch: 0.32,
+    wasPressed: () => false,
+    consumeClick: () => false,
+  };
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+// Steer a car toward a point on the road ahead (pure pursuit).
+function driveToward(world, input, tx, tz) {
+  const car = world.player.car;
+  if (!car) return;
+  const want = Math.atan2(tx - car.x, tz - car.z);
+  let d = want - car.heading;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  input.moveX = Math.max(-1, Math.min(1, d * 1.8));
+  input.moveY = 1;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+// Put the player in a car on a road, ready to drive.
+function putInCar(world, x, z, heading) {
+  const p = world.player;
+  const car = world.cars.find((c) => !c.traffic && !c.wrecked && Math.hypot(c.x - x, c.z - z) < 30)
+    || world.cars.find((c) => !c.traffic && !c.wrecked);
+  car.x = x; car.z = z; car.heading = heading; car.speed = 0;
+  car.mesh.position.set(x, 0, z);
+  car.mesh.rotation.y = heading;
+  stealCar(world, car);
+  return car;
+}
+
+export function stageShot(world, name, seed = 1) {
+  const input = fakeInput();
+  world.autopilot = true;
+  world.screen = 'play';
+  const p = world.player;
+
+  if (name === 'drive') {
+    // Cruise up Meridian Row in a stolen coupe, traffic around.
+    putInCar(world, -26, -150, 0);
+    input.camYaw = Math.PI;
+    for (let i = 0; i < 8 / STEP; i += 1) {
+      driveToward(world, input, -26, world.player.car.z + 30);
+      world.update(STEP, input);
+    }
+    return { screen: 'play' };
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  if (name === 'chase') {
+    // Three stars, police on your tail, foot down on the coast road.
+    putInCar(world, 78, -140, 0);
+    world.addWanted(3, 'staged chase');
+    input.camYaw = Math.PI;
+    for (let i = 0; i < 10 / STEP; i += 1) {
+      driveToward(world, input, 78, world.player.car.z + 30);
+      // Swerve a little so the chase reads as a chase.
+      input.moveX += Math.sin(i * STEP * 0.8) * 0.15;
+      world.update(STEP, input);
+    }
+    return { screen: 'play' };
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  if (name === 'mission') {
+    // Mission 3: the Breakers at the Plaza. Mara takes aim with the pistol —
+    // staged mid-fight, so the gang is still standing in the frame.
+    p.x = 0; p.z = 12; p.heading = Math.PI;
+    p.weapon = 'pistol';
+    p.ammo = 24;
+    world.playerMesh.position.set(p.x, 0, p.z);
+    startMission(world, 2);
+    input.camYaw = Math.PI;
+    let shootCd = 0.3;
+    for (let i = 0; i < 3 / STEP; i += 1) {
+      shootCd -= STEP;
+      const alive = world.enemies.find((e) => !e.dead);
+      if (alive && shootCd <= 0) {
+        shootCd = 1.1;
+        const dx = alive.x - p.x, dz = alive.z - p.z;
+        const d = Math.hypot(dx, dz) || 1;
+        shoot(world, { x: p.x, y: 1.4, z: p.z }, { x: dx / d, y: 0, z: dz / d });
+        p.heading = Math.atan2(dx, dz);
+      }
+      world.update(STEP, input);
+    }
+    return { screen: 'play' };
+  }
+
+  // start (default): on foot at the Plaza, first job on the board, city alive.
+  // Mara stands at the fountain's edge, the plaza and the city ahead of her.
+  p.x = PLACES.plaza.x; p.z = 14; p.heading = Math.PI;
+  world.playerMesh.position.set(p.x, 0, p.z);
+  startMission(world, 0);
+  input.camYaw = Math.PI;
+  for (let i = 0; i < 5 / STEP; i += 1) {
+    world.update(STEP, input);
+  }
+  return { screen: 'play' };
 }
